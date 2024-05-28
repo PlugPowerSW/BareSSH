@@ -7,38 +7,38 @@
 #define BUFFER_SIZE 1024
 
 typedef enum {
-    INIT,
-    WAIT_FOR_CONNECTION,
-    HANDSHAKE,
-    KEY_EXCHANGE,
-    AUTHENTICATION,
-    SESSION_ESTABLISHED,
-    PROCESS_REQUEST,
-    ERROR,
-    CLOSE_CONNECTION
+  INIT,
+  WAIT_FOR_CONNECTION,
+  HANDSHAKE,
+  KEY_EXCHANGE,
+  AUTHENTICATION,
+  SESSION_ESTABLISHED,
+  PROCESS_REQUEST,
+  ERROR,
+  CLOSE_CONNECTION
 } State;
 
 typedef struct {
-    State current_state;
-    int server_fd;
-    int client_fd;
-    struct sockaddr_in client_addr;
-    socklen_t client_addr_len;
-    char buffer[BUFFER_SIZE];
-    ssize_t bytes_received;
+  State current_state;
+  int server_fd;
+  int client_fd;
+  struct sockaddr_in client_addr;
+  socklen_t client_addr_len;
+  char buffer[BUFFER_SIZE];
+  ssize_t bytes_received;
 } SSHServer;
 
 void server_poll( SSHServer *server );
 
-void handle_init( SSHServer *server );
-void handle_wait_for_connection( SSHServer *server );
+void init_server( SSHServer *server );
+void check_for_connection( SSHServer *server );
 void handle_handshake( SSHServer *server );
 void handle_key_exchange( SSHServer *server );
 void handle_authentication( SSHServer *server );
-void handle_session_established( SSHServer *server );
-void handle_process_request( SSHServer *server );
+void init_established_session( SSHServer *server );
+void process_request( SSHServer *server );
 void handle_error( SSHServer *server );
-void handle_close_connection( SSHServer *server );
+void close_connection( SSHServer *server );
 
 //small example main, this will eventually be whatever polling function you guys are using
 int main( int argc, char *argv[] ) {
@@ -48,6 +48,8 @@ int main( int argc, char *argv[] ) {
   {
     server_poll(&server);
   }
+  
+  return 0;
 }
 
 void server_poll( SSHServer *server )
@@ -57,10 +59,10 @@ void server_poll( SSHServer *server )
   switch(server->current_state)
   {
     case INIT:
-      handle_init(server);
+      init_server(server);
       break;
     case WAIT_FOR_CONNECTION:
-      handle_wait_for_connection(server);
+      check_for_connection(server);
       break;
     case HANDSHAKE:
       handle_handshake(server);
@@ -72,34 +74,34 @@ void server_poll( SSHServer *server )
       handle_authentication(server);
       break;
     case SESSION_ESTABLISHED:
-      handle_session_established(server);
+      init_established_session(server);
       break;
     case PROCESS_REQUEST:
-      handle_process_request(server);
+      process_request(server);
       break;
     case ERROR:
       handle_error(server);
       break;
     case CLOSE_CONNECTION:
-      handle_close_connection(server);
+      close_connection(server);
       break;
   }
 }
 
-void handle_init( SSHServer *server )
+void init_server( SSHServer *server )
 {
   server->server_fd = socket(AF_INET, SOCK_STREAM, 0);
-  if(server->server_fd == -1 )
+  if (server->server_fd == -1 )
   {
-    printf("Socket creation failed: %s...\n", strerror(errno));
+    printf("Socket creation failed: %s\n", strerror(errno));
     server->current_state = ERROR;
     return;
   }
 
   int reuse = 1;
-  if(setsockopt(server->server_fd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0)
+  if (setsockopt(server->server_fd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0)
   {
-    printf("SO_REUSEPORT failed: %s \n", strerror(errno));
+    printf("SO_REUSEPORT failed: %s\n", strerror(errno));
     server->current_state = ERROR;
     return;
   }
@@ -109,17 +111,17 @@ void handle_init( SSHServer *server )
                                    .sin_addr = { htonl(INADDR_ANY) },
   };
 
-  if(bind(server->server_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0)
+  if (bind(server->server_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0)
   {
-    printf("Bind failed: %s \n", strerror(errno));
+    printf("Bind failed: %s\n", strerror(errno));
     server->current_state = ERROR;
     return;
   }
 
   int connection_backlog = 5;
-  if(listen(server->server_fd, connection_backlog) != 0)
+  if (listen(server->server_fd, connection_backlog) != 0)
   {
-    printf("Listen failed: %s \n", strerror(errno));
+    printf("Listen failed: %s\n", strerror(errno));
     server->current_state = ERROR;
     return;
   }
@@ -127,13 +129,13 @@ void handle_init( SSHServer *server )
   server->current_state = WAIT_FOR_CONNECTION;
 }
 
-void handle_wait_for_connection( SSHServer *server )
+void check_for_connection( SSHServer *server )
 {
   server->client_addr_len = sizeof(server->client_addr);
   server->client_fd = accept(server->server_fd, (struct sockaddr*) &server->client_addr, &server->client_addr_len);
-  if(server->client_fd == -1)
+  if (server->client_fd == -1)
   {
-    printf("Accept failed: %s \n", strerror(errno));
+    printf("Accept failed: %s\n", strerror(errno));
     server->current_state = ERROR;
   }
   else
@@ -168,15 +170,16 @@ void handle_authentication( SSHServer *server )
 
 //this state might be dumb and redundant but I figured there might be some
 //sort of initialization to do before we started directly processing requests
-void handle_session_established( SSHServer *server )
+void init_established_session( SSHServer *server )
 {
   printf("Session established. Ready to process requests...\n");
   server->current_state = PROCESS_REQUEST;
 }
 
-void handle_process_request( SSHServer *server )
+void process_request( SSHServer *server )
 {
-  server->bytes_received = recv(server->client_fd, server->buffer, BUFFER_SIZE, 0);
+  //BUFFER_SIZE - 1 because I'm guaranteeing a null-terminated string for now.
+  server->bytes_received = recv(server->client_fd, server->buffer, BUFFER_SIZE - 1, 0);
   if (server->bytes_received > 0)
   {
     server->buffer[server->bytes_received] = '\0';  // Null-terminate the received data
@@ -202,15 +205,10 @@ void handle_error( SSHServer *server )
   //handle error, clean-up, etc
   //should probably add some sort of error code system but for now just treat
   //everything the same
-  if (server->client_fd != -1)
-  {
-    close(server->client_fd);
-    server->client_fd = -1;
-  }
   server->current_state = CLOSE_CONNECTION;
 }
 
-void handle_close_connection( SSHServer *server )
+void close_connection( SSHServer *server )
 {
   //lots of clean-up to do here eventually
   if (server->client_fd != -1) {
